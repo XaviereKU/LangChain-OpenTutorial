@@ -8,7 +8,9 @@
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
+# Unnecessary files
 */.cache/*
+*/.idea/*
 
 # IPython
 profile_default/
@@ -25,7 +27,6 @@ __pycache__/
 
 # C extensions
 *.so
-
 .env
 
 # Distribution / packaging
