@@ -8,7 +8,7 @@ from hashlib import md5
 import os, time
 
 
-class Neo4jDocumentManager(DocumentManager):
+class Neo4jCRUDManager(DocumentManager):
     def __init__(self, client, index_name, embedding):
         self.index_name = index_name
         self.client = client
@@ -110,6 +110,7 @@ class Neo4jDocumentManager(DocumentManager):
             "SET c += row.metadata "
             "} IN TRANSACTIONS OF 1000 ROWS "
         )
+
         try:
             self.client.execute_query(import_query, parameters_=parameters)
         except Exception as e:
@@ -119,7 +120,7 @@ class Neo4jDocumentManager(DocumentManager):
                 time.sleep(10)
                 self.client.session().run(neo4j.Query(text=import_query), parameters)
 
-        return ids
+        return None
 
     def upsert_parallel(
         self, texts, metadatas=None, ids=None, batch_size=32, workers=10, **kwargs
@@ -157,9 +158,9 @@ class Neo4jDocumentManager(DocumentManager):
             for future in as_completed(futures):
                 result = future.result()
                 if result:
-                    results.extend(result)
+                    results.append(result)
 
-        return results
+        return None
 
     def search(self, query, k=10, **kwargs):
         embeded_query = self.embedding.embed_query(query)
@@ -424,7 +425,7 @@ class Neo4jIndexManager:
             print("Created index information")
             print(info_str)
             print("Index creation successful. Return Neo4jDBManager object.")
-            return Neo4jDocumentManager(
+            return Neo4jCRUDManager(
                 self.client, index_name=index_name, embedding=embedding
             )
 
