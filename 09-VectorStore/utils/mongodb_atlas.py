@@ -16,7 +16,6 @@ from pymongo.results import (
 )
 from bson import encode
 from bson.raw_bson import RawBSONDocument
-from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_community.document_loaders import TextLoader
@@ -24,33 +23,36 @@ from langchain_text_splitters.base import TextSplitter
 from utils.vectordbinterface import DocumentManager
 
 
-class MongoDBAtlas:
+class MongoDBAtlasCollectionManager:
     """Manages MongoDB collections and vector store.
     Provides methods to add, update, delete indexes and manage documents in the vector store.
     """
 
-    def __init__(self, db_name: str, collection_name: str):
+    def __init__(self, db_name: str, client=None):
         """Initialize a MongoDB client and configures the database.
 
         Args:
             db_name (str): The name of the database to connect to.
             collection_name (str): The name of the collection to use.
         """
-        MONGODB_ATLAS_CLUSTER_URI = os.getenv("MONGODB_ATLAS_CLUSTER_URI")
-        client = MongoClient(MONGODB_ATLAS_CLUSTER_URI, tlsCAFile=certifi.where())
-        self.database = client[db_name]
-        self.collection_name = collection_name
+        if client is None:
+            MONGODB_ATLAS_CLUSTER_URI = os.getenv("MONGODB_ATLAS_CLUSTER_URI")
+            self.client = MongoClient(
+                MONGODB_ATLAS_CLUSTER_URI, tlsCAFile=certifi.where()
+            )
+        else:
+            self.client = client
+        self.database = self.client[db_name]
         self.collection = None
-        self.vector_store = None
 
-    def connect(self) -> Collection[_DocumentType]:
+    def create_collection(self, collection_name: str) -> Collection[_DocumentType]:
         """Create a collection."""
+        self.collection_name = collection_name
         collection_names = self.database.list_collection_names()
         if self.collection_name not in collection_names:
             self.collection = self.database.create_collection(self.collection_name)
         else:
             self.collection = self.database[self.collection_name]
-        return self.collection
 
     def _is_index_exists(self, index_name: str) -> bool:
         """Check whether the specified search index exists in the collection.
@@ -96,164 +98,20 @@ class MongoDBAtlas:
         if self._is_index_exists(index_name):
             self.collection.drop_search_index(index_name)
 
-    def create_vector_store(
-        self, embedding: Embeddings, index_name: str, relevance_score_fn: str
-    ):
-        """Create a vector store.
-        `MongoDBAtlasVectorSearch` is a vector store that integrates Atlas Vector Search and Langchain.
 
-        Args:
-            embedding (Embeddings): Text embedding model to use.
-            index_name (str): The name of the search index to create.
-            relevance_score_fn (str): The similarity score used for the index
-                Currently supported: 'euclidean', 'cosine', and 'dotProduct'
-        """
-        self.vector_index_name = index_name
-        self.embedding = embedding
-        self.vector_store = MongoDBAtlasVectorSearch(
-            collection=self.collection,
-            embedding=embedding,
-            index_name=index_name,
-            relevance_score_fn=relevance_score_fn,
-        )
-
-    def get_embedding(self, text: str) -> List[float]:
-        """Embed query text.
-
-        Args:
-            text: The text to embed.
-
-        Returns:
-            Embedding for the text.
-        """
-        return self.embedding.embed_query(text)
-
-    def create_vector_search_index(
-        self,
-        dimensions: int,
-        filters: Optional[List[str]] = None,
-        update: bool = False,
-    ) -> None:
-        """Create a vectorSearch index.
-
-        Args:
-            dimensions (int): Number of dimensions in embedding
-            filters (Optional[List[str]]): Index definition.
-            update (Optional[bool]): Update existing vectorSearch index.
-        """
-        if not self._is_index_exists(self.vector_index_name):
-            self.vector_store.create_vector_search_index(
-                dimensions=dimensions, filters=filters, update=update
-            )
-
-    def update_vector_search_index(
-        self, dimensions: int, filters: Optional[List[str]] = None
-    ) -> None:
-        """Update a vectorSearch index.
-
-        Args:
-            dimensions (int): Number of dimensions in embedding
-            filters (Optional[List[str]]): Index definition.
-        """
-        self.vector_store.create_vector_search_index(
-            dimensions=dimensions, filters=filters, update=True
-        )
-
-    def add_documents(self, documents: List[Document]) -> List[str]:
-        return self.vector_store.add_documents(documents=documents)
-
-    def delete_documents(
-        self, ids: Optional[List[str]] = None, **kwargs: Any
-    ) -> Optional[bool]:
-        return self.vector_store.delete(ids=ids, **kwargs)
-
-    def similarity_search(
-        self,
-        query: str,
-        k: int = 4,
-        pre_filter: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> List[Document]:
-        return self.vector_store.similarity_search(
-            query=query, k=k, pre_filter=pre_filter, **kwargs
-        )
-
-    def similarity_search_with_score(
-        self,
-        query: str,
-        k: int = 4,
-        pre_filter: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> List[Tuple[Document, float]]:
-        return self.vector_store.similarity_search_with_score(
-            query=query, k=k, pre_filter=pre_filter, **kwargs
-        )
-
-
-class MongoDBAtlasDocumentManager(DocumentManager):
+class MongoDBAtlasCRUDManager(DocumentManager):
     """A document manager that handles document processing and CRUD operations in MongoDB Atlas."""
 
-    def __init__(self, atlas: MongoDBAtlas) -> None:
+    def __init__(self, client, db_name, collection_name, embedding) -> None:
         """Initialize connection to the database and retrieve the embedding function.
 
         Args:
             atlas (MongoDBAtlas): A MongoDBAtlas instance to use MongoDB client function.
         """
-        self.collection = atlas.connect()
-        self.embedding_function = atlas.get_embedding
-
-    def get_documents(
-        self,
-        file_path: Union[str, Path],
-        encoding: Optional[str] = None,
-        autodetect_encoding: bool = False,
-    ) -> list[Document]:
-        """Load text file and return Document objects."""
-        loader = TextLoader(file_path, encoding, autodetect_encoding)
-        return loader.load()
-
-    def split_documents(
-        self,
-        documents: Iterable[Document],
-        split_condition: Callable[[str], Iterable[str]],
-        split_index_name: str,
-    ) -> List[Document]:
-        """Splits documents into smaller units according to be specified splitting condition.
-
-        Args:
-            documents (Iterable[Document]): A collection of documents.
-            split_condition (Callable[[str], Iterable[str]]): A function that takes a text string
-                and returns the split text.
-            split_index_name (str): The name of the index to add to the document metadata.
-
-        Returns:
-            List[Document]: A list of documents containing split text and corresponding metadata.
-        """
-        return [
-            Document(page_content=text, metadata=metadata)
-            for document in documents
-            for text, metadata in self.split_texts(
-                document.page_content, split_condition, split_index_name
-            )
-        ]
-
-    def split_documents_by_splitter(
-        self, splitter: TextSplitter, documents: Iterable[Document]
-    ) -> List[Document]:
-        """Splits documents into smaller units using a given splitter."""
-        return splitter.split_documents(documents)
-
-    def split_texts(
-        self,
-        texts: str,
-        split_condition: Callable[[str], Iterable[str]],
-        split_index_name: str,
-    ) -> List[Tuple[str, dict[str, Any]]]:
-        """Splits texts into smaller units and returns split text and corresponding metadata."""
-        return [
-            (document, {split_index_name: index})
-            for index, document in enumerate(split_condition(texts))
-        ]
+        self.database = client[db_name]
+        self.collection_name = collection_name
+        self.collection = self.database[self.collection_name]
+        self.embedding_function = embedding
 
     def convert_document_to_raw_bson(
         self,
@@ -365,10 +223,10 @@ class MongoDBAtlasDocumentManager(DocumentManager):
         Update documents that match the filter or insert new documents.
         """
         for i, text in enumerate(texts):
-            embedding = self.embedding_function(text)
+            embeded = self.embedding_function.embed_documents([text])
             doc = {
                 "page_content": text,
-                "embedding": embedding,
+                "embedding": embeded,
                 "metadata": metadatas[i] if metadatas else {},
             }
             if ids:
@@ -420,7 +278,7 @@ class MongoDBAtlasDocumentManager(DocumentManager):
             embeddings = []
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = [
-                    executor.submit(self.embedding_function, text)
+                    executor.submit(self.embedding_function.embed_documents, [text])
                     for text in texts_batch
                 ]
                 for future in as_completed(futures):
